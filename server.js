@@ -1,91 +1,67 @@
+// server.js
 const express = require("express");
 const http = require("http");
 const { Server: IOServer } = require("socket.io");
-const WebSocket = require("ws");
 
 const app = express();
 const server = http.createServer(app);
 const io = new IOServer(server, {
   path: "/socket.io",
   cors: {
-    origin: process.env.CORS_ORIGIN || "*",
+    origin: "https://audionize.netlify.app", // or "*"
     methods: ["GET", "POST"],
   },
 });
-const wss = new WebSocket.Server({ server, path: "/ws" });
 
 const PORT = process.env.PORT || 4000;
-const sessions = {}; // { sessionCode: { host, clients, audioUrl, ... } }
+const sessions = {}; // { sessionCode: { host: socket, clients: [socket, ...] } }
 
 // Health check endpoints
-app.get("/", (req, res) => {
-  res.send("Server is running!");
-});
-app.get("/healthz", (req, res) => {
-  res.status(200).send("OK");
-});
-
-// --- WebSocket (LAN) ---
-wss.on("connection", (ws) => {
-  ws.on("message", (msg) => {
-    let data;
-    try {
-      data = JSON.parse(msg);
-    } catch {
-      return;
-    }
-    if (data.type === "join") {
-      ws.session = data.session;
-      ws.role = data.role;
-      sessions[data.session] = sessions[data.session] || {
-        clients: [],
-        host: null,
-      };
-      if (data.role === "host") sessions[data.session].host = ws;
-      else sessions[data.session].clients.push(ws);
-    }
-    if (data.type === "sync" && ws.session) {
-      const session = sessions[ws.session];
-      if (session) {
-        (session.clients || []).forEach((client) => {
-          if (client !== ws && client.readyState === WebSocket.OPEN)
-            client.send(msg);
-        });
-      }
-    }
-  });
-  ws.on("close", () => {
-    if (ws.session && sessions[ws.session]) {
-      sessions[ws.session].clients = (
-        sessions[ws.session].clients || []
-      ).filter((c) => c !== ws);
-      if (sessions[ws.session].host === ws) sessions[ws.session].host = null;
-    }
-  });
-});
+app.get("/", (req, res) => res.send("Server is running!"));
+app.get("/healthz", (req, res) => res.status(200).send("OK"));
 
 // --- Socket.IO (Internet) ---
 io.on("connection", (socket) => {
-  socket.on("join", ({ session, role }) => {
+  socket.on("join", ({ session, role, name }) => {
     socket.session = session;
     socket.role = role;
+    socket.name = name;
     socket.join(session);
+
+    // Track host/client in memory for this session
     sessions[session] = sessions[session] || { clients: [], host: null };
-    if (role === "host") sessions[session].host = socket;
-    else sessions[session].clients.push(socket);
+    if (role === "host") {
+      sessions[session].host = socket;
+    } else {
+      sessions[session].clients.push(socket);
+    }
+
+    // Optionally, notify others in the room
+    socket.to(session).emit("user-joined", { name, role });
   });
+
   socket.on("sync", (data) => {
     if (socket.session) {
-      socket.to(socket.session).emit("sync", data);
+      socket.to(socket.session).emit("sync", data); // Only to others in the same room
     }
   });
+
   socket.on("disconnect", () => {
     if (socket.session && sessions[socket.session]) {
+      // Remove from clients array if present
       sessions[socket.session].clients = (
         sessions[socket.session].clients || []
       ).filter((c) => c !== socket);
-      if (sessions[socket.session].host === socket)
+
+      // Remove as host if this was the host
+      if (sessions[socket.session].host === socket) {
         sessions[socket.session].host = null;
+      }
+
+      // Optionally, notify others
+      socket
+        .to(socket.session)
+        .emit("user-left", { name: socket.name, role: socket.role });
     }
   });
 });
