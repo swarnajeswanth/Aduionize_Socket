@@ -17,9 +17,12 @@ const wss = new WebSocket.Server({ server, path: "/ws" });
 const PORT = process.env.PORT || 4000;
 const sessions = {}; // { sessionCode: { host, clients, audioUrl, ... } }
 
-// Health check endpoint
+// Health check endpoints
 app.get("/", (req, res) => {
   res.send("Server is running!");
+});
+app.get("/healthz", (req, res) => {
+  res.status(200).send("OK");
 });
 
 // --- WebSocket (LAN) ---
