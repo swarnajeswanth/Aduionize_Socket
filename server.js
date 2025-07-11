@@ -76,7 +76,34 @@ io.on("connection", (socket) => {
       socket.to(socket.session).emit("audio-uploaded", audio);
     }
   });
+  // Play command from host
+  socket.on("play_command", (data) => {
+    if (socket.session) {
+      // Broadcast to all clients in the session except sender
+      socket.to(socket.session).emit("play_command", data);
+    }
+  });
 
+  // Pause command from host
+  socket.on("pause_command", (data) => {
+    if (socket.session) {
+      socket.to(socket.session).emit("pause_command", data);
+    }
+  });
+
+  // Seek command from host
+  socket.on("seek_command", (data) => {
+    if (socket.session) {
+      socket.to(socket.session).emit("seek_command", data);
+    }
+  });
+
+  // Volume command from host (optional)
+  socket.on("volume_command", (data) => {
+    if (socket.session) {
+      socket.to(socket.session).emit("volume_command", data);
+    }
+  });
   socket.on("playback-action", (data) => {
     if (socket.session) {
       socket.to(socket.session).emit("playback-action", data);
