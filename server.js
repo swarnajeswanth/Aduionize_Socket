@@ -1,0 +1,81 @@
+const http = require("http");
+const { Server: IOServer } = require("socket.io");
+const WebSocket = require("ws");
+
+const server = http.createServer();
+const io = new IOServer(server, { path: "/socket.io" });
+const wss = new WebSocket.Server({ server, path: "/ws" });
+
+const sessions = {}; // { sessionCode: { host, clients, audioUrl, ... } }
+
+// --- WebSocket (LAN) ---
+wss.on("connection", (ws) => {
+  ws.on("message", (msg) => {
+    let data;
+    try {
+      data = JSON.parse(msg);
+    } catch {
+      return;
+    }
+    // Example: { type: 'join', session: 'ABC123', role: 'host'|'client', ... }
+    if (data.type === "join") {
+      ws.session = data.session;
+      ws.role = data.role;
+      sessions[data.session] = sessions[data.session] || {
+        clients: [],
+        host: null,
+      };
+      if (data.role === "host") sessions[data.session].host = ws;
+      else sessions[data.session].clients.push(ws);
+    }
+    // Broadcast sync/play/pause/etc. to all in session
+    if (data.type === "sync" && ws.session) {
+      const session = sessions[ws.session];
+      if (session) {
+        (session.clients || []).forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN)
+            client.send(msg);
+        });
+      }
+    }
+  });
+  ws.on("close", () => {
+    // Remove from session
+    if (ws.session && sessions[ws.session]) {
+      sessions[ws.session].clients = (
+        sessions[ws.session].clients || []
+      ).filter((c) => c !== ws);
+      if (sessions[ws.session].host === ws) sessions[ws.session].host = null;
+    }
+  });
+});
+
+// --- Socket.IO (Internet) ---
+io.on("connection", (socket) => {
+  socket.on("join", ({ session, role }) => {
+    socket.session = session;
+    socket.role = role;
+    socket.join(session);
+    sessions[session] = sessions[session] || { clients: [], host: null };
+    if (role === "host") sessions[session].host = socket;
+    else sessions[session].clients.push(socket);
+  });
+  socket.on("sync", (data) => {
+    if (socket.session) {
+      socket.to(socket.session).emit("sync", data);
+    }
+  });
+  socket.on("disconnect", () => {
+    if (socket.session && sessions[socket.session]) {
+      sessions[socket.session].clients = (
+        sessions[socket.session].clients || []
+      ).filter((c) => c !== socket);
+      if (sessions[socket.session].host === socket)
+        sessions[socket.session].host = null;
+    }
+  });
+});
+
+server.listen(4000, () => {
+  // Server started successfully
+});
