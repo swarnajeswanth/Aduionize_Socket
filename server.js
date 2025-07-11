@@ -1,12 +1,26 @@
+const express = require("express");
 const http = require("http");
 const { Server: IOServer } = require("socket.io");
 const WebSocket = require("ws");
 
-const server = http.createServer();
-const io = new IOServer(server, { path: "/socket.io" });
+const app = express();
+const server = http.createServer(app);
+const io = new IOServer(server, {
+  path: "/socket.io",
+  cors: {
+    origin: "*", // Change to your frontend domain in production
+    methods: ["GET", "POST"],
+  },
+});
 const wss = new WebSocket.Server({ server, path: "/ws" });
 
+const PORT = process.env.PORT || 4000;
 const sessions = {}; // { sessionCode: { host, clients, audioUrl, ... } }
+
+// Health check endpoint
+app.get("/", (req, res) => {
+  res.send("Server is running!");
+});
 
 // --- WebSocket (LAN) ---
 wss.on("connection", (ws) => {
@@ -17,7 +31,6 @@ wss.on("connection", (ws) => {
     } catch {
       return;
     }
-    // Example: { type: 'join', session: 'ABC123', role: 'host'|'client', ... }
     if (data.type === "join") {
       ws.session = data.session;
       ws.role = data.role;
@@ -28,7 +41,6 @@ wss.on("connection", (ws) => {
       if (data.role === "host") sessions[data.session].host = ws;
       else sessions[data.session].clients.push(ws);
     }
-    // Broadcast sync/play/pause/etc. to all in session
     if (data.type === "sync" && ws.session) {
       const session = sessions[ws.session];
       if (session) {
@@ -40,7 +52,6 @@ wss.on("connection", (ws) => {
     }
   });
   ws.on("close", () => {
-    // Remove from session
     if (ws.session && sessions[ws.session]) {
       sessions[ws.session].clients = (
         sessions[ws.session].clients || []
@@ -76,6 +87,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(4000, () => {
-  // Server started successfully
+server.listen(PORT, () => {
+  console.log(`Server started on port ${PORT}`);
 });
