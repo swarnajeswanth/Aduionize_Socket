@@ -69,7 +69,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("audio-uploaded", (audio) => {
+  socket.on("audio_upload", (audio) => {
     if (socket.session && sessions[socket.session]) {
       sessions[socket.session].audio = audio;
       // Broadcast to all clients (except sender)
@@ -80,6 +80,17 @@ io.on("connection", (socket) => {
   socket.on("playback-action", (data) => {
     if (socket.session) {
       socket.to(socket.session).emit("playback-action", data);
+    }
+  });
+  // When a client toggles their mic
+  socket.on("mic-status", ({ isMuted }) => {
+    if (socket.session) {
+      // Broadcast to host and all clients in the session
+      io.to(socket.session).emit("mic-status-update", {
+        userId: socket.id,
+        name: socket.name,
+        isMuted,
+      });
     }
   });
 
