@@ -8,7 +8,7 @@ const server = http.createServer(app);
 const io = new IOServer(server, {
   path: "/socket.io",
   cors: {
-    origin: "*", // Change to your frontend domain in production
+    origin: process.env.CORS_ORIGIN || "*",
     methods: ["GET", "POST"],
   },
 });
