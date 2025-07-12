@@ -172,7 +172,12 @@ io.on("connection", (socket) => {
         sessions[socket.session].clients || []
       ).filter((c) => c.id !== socket.id);
 
+      // If the host is disconnecting, notify all clients
       if (sessions[socket.session].host?.id === socket.id) {
+        // Notify all clients in the session
+        io.to(socket.session).emit("host_disconnect", {
+          message: "Host has disconnected. Session ended.",
+        });
         sessions[socket.session].host = null;
       }
 
