@@ -32,16 +32,13 @@ app.use((req, res, next) => {
     "https://localhost:3000",
     "https://127.0.0.1:3000",
   ];
-
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
   }
-
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.header("Access-Control-Allow-Credentials", "true");
-
   if (req.method === "OPTIONS") {
     res.sendStatus(200);
   } else {
@@ -79,12 +76,14 @@ io.on("connection", (socket) => {
       // If audio already uploaded, send to host
       if (sessions[session].audio) {
         socket.emit("audio-uploaded", sessions[session].audio);
+        socket.emit("audio_sync", sessions[session].audio); // for client compatibility
       }
     } else {
       sessions[session].clients.push(socket);
       // If audio already uploaded, send to new client
       if (sessions[session].audio) {
         socket.emit("audio-uploaded", sessions[session].audio);
+        socket.emit("audio_sync", sessions[session].audio); // for client compatibility
       }
       // Notify host
       if (sessions[session].host) {
@@ -108,45 +107,36 @@ io.on("connection", (socket) => {
       sessions[socket.session].audio = audio;
       // Broadcast to all clients (except sender)
       socket.to(socket.session).emit("audio-uploaded", audio);
-    }
-  });
-  // Play command from host
-  socket.on("play_command", (data) => {
-    if (socket.session) {
-      // Broadcast to all clients in the session except sender
-      socket.to(socket.session).emit("play_command", data);
-    }
-  });
-
-  // Pause command from host
-  socket.on("pause_command", (data) => {
-    if (socket.session) {
-      socket.to(socket.session).emit("pause_command", data);
+      socket.to(socket.session).emit("audio_sync", audio); // for client compatibility
+      // Also send to host if not sender
+      if (
+        sessions[socket.session].host &&
+        sessions[socket.session].host.id !== socket.id
+      ) {
+        sessions[socket.session].host.emit("audio-uploaded", audio);
+        sessions[socket.session].host.emit("audio_sync", audio);
+      }
     }
   });
 
-  // Seek command from host
-  socket.on("seek_command", (data) => {
-    if (socket.session) {
-      socket.to(socket.session).emit("seek_command", data);
-    }
+  // Playback commands from host
+  [
+    "play_command",
+    "pause_command",
+    "seek_command",
+    "volume_command",
+    "sync_all_command",
+  ].forEach((event) => {
+    socket.on(event, (data) => {
+      if (socket.session) {
+        socket.to(socket.session).emit(event, data);
+      }
+    });
   });
 
-  // Volume command from host (optional)
-  socket.on("volume_command", (data) => {
-    if (socket.session) {
-      socket.to(socket.session).emit("volume_command", data);
-    }
-  });
-  socket.on("playback-action", (data) => {
-    if (socket.session) {
-      socket.to(socket.session).emit("playback-action", data);
-    }
-  });
   // When a client toggles their mic
   socket.on("mic-status", ({ isMuted }) => {
     if (socket.session) {
-      // Broadcast to host and all clients in the session
       io.to(socket.session).emit("mic-status-update", {
         userId: socket.id,
         name: socket.name,
@@ -191,6 +181,14 @@ io.on("connection", (socket) => {
       socket
         .to(socket.session)
         .emit("user-left", { name: socket.name, role: socket.role });
+
+      // Clean up session if empty
+      if (
+        !sessions[socket.session].host &&
+        sessions[socket.session].clients.length === 0
+      ) {
+        delete sessions[socket.session];
+      }
     }
   });
 });
