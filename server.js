@@ -49,6 +49,17 @@ app.get("/status", (req, res) =>
   res.json({
     status: "running",
     activeSessions: Object.keys(sessions).length,
+    sessions: Object.keys(sessions).map((sessionCode) => ({
+      sessionCode,
+      host: sessions[sessionCode].host?.name || null,
+      clientCount: sessions[sessionCode].clients.length,
+      clients: sessions[sessionCode].clients.map((c) => ({
+        id: c.id,
+        name: c.name,
+      })),
+      hasAudio: !!sessions[sessionCode].audio,
+      createdAt: sessions[sessionCode].createdAt,
+    })),
     timestamp: new Date().toISOString(),
   })
 );
@@ -56,29 +67,68 @@ app.get("/status", (req, res) =>
 // --- Socket.IO (Internet) ---
 io.on("connection", (socket) => {
   socket.on("join", ({ session, role, name }) => {
+    console.log(
+      `[JOIN-ATTEMPT] ${role} (${name}) attempting to join session ${session}`
+    );
+
+    // Validate input
+    if (!session || !role || !name) {
+      console.error(`[JOIN-ERROR] Invalid join data:`, { session, role, name });
+      return;
+    }
+
     socket.session = session;
     socket.role = role;
     socket.name = name;
     socket.join(session);
 
-    // Track host/client in memory for this session
-    sessions[session] = sessions[session] || {
-      clients: [],
-      host: null,
-      audio: null,
-    };
+    // Initialize session if it doesn't exist
+    if (!sessions[session]) {
+      sessions[session] = {
+        clients: [],
+        host: null,
+        audio: null,
+        createdAt: Date.now(),
+      };
+      console.log(`[SESSION-CREATED] New session ${session} created`);
+    }
+
+    // Remove any existing connection for this socket ID
     if (role === "host") {
+      // If there's already a host, disconnect them
+      if (sessions[session].host && sessions[session].host.id !== socket.id) {
+        console.log(
+          `[HOST-REPLACE] Replacing existing host in session ${session}`
+        );
+        sessions[session].host.socket.disconnect(true);
+      }
       sessions[session].host = { id: socket.id, name, socket };
+      console.log(`[HOST-JOINED] Host (${name}) joined session ${session}`);
+
+      // Send existing audio to new host
       if (sessions[session].audio) {
         socket.emit("audio-uploaded", sessions[session].audio);
-        socket.emit("audio_sync", sessions[session].audio); // for client compatibility
+        socket.emit("audio_sync", sessions[session].audio);
       }
     } else {
+      // Remove any existing client with same ID
+      sessions[session].clients = sessions[session].clients.filter(
+        (c) => c.id !== socket.id
+      );
+
+      // Add new client
       sessions[session].clients.push({ id: socket.id, name, socket });
+      console.log(
+        `[CLIENT-JOINED] Client (${name}) joined session ${session}. Total clients: ${sessions[session].clients.length}`
+      );
+
+      // Send existing audio to new client
       if (sessions[session].audio) {
         socket.emit("audio-uploaded", sessions[session].audio);
-        socket.emit("audio_sync", sessions[session].audio); // for client compatibility
+        socket.emit("audio_sync", sessions[session].audio);
       }
+
+      // Notify host about new client
       if (sessions[session].host) {
         sessions[session].host.socket.emit("user-joined", {
           name,
@@ -87,16 +137,23 @@ io.on("connection", (socket) => {
       }
     }
 
-    // Notify all clients of updated presence
+    // Broadcast updated presence to all clients in session
     const clientList = sessions[session].clients.map((c) => ({
       id: c.id,
       name: c.name,
     }));
+
     io.to(session).emit("presence-update", {
       host: sessions[session].host?.name,
       clients: clientList,
     });
-    console.log(`[JOIN] ${role} (${name}) joined session ${session}`);
+
+    console.log(
+      `[JOIN-SUCCESS] ${role} (${name}) successfully joined session ${session}`
+    );
+    console.log(
+      `[SESSION-STATUS] Session ${session}: Host=${sessions[session].host?.name}, Clients=${sessions[session].clients.length}`
+    );
   });
 
   socket.on("audio_upload", (audio) => {
@@ -168,12 +225,43 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     if (socket.session && sessions[socket.session]) {
-      sessions[socket.session].clients = (
-        sessions[socket.session].clients || []
-      ).filter((c) => c.id !== socket.id);
+      console.log(
+        `[DISCONNECT] ${socket.role} (${socket.name}) disconnecting from session ${socket.session}`
+      );
 
-      // If the host is disconnecting, notify all clients
-      if (sessions[socket.session].host?.id === socket.id) {
+      // Remove client from session
+      if (socket.role === "client") {
+        const initialClientCount = sessions[socket.session].clients.length;
+        sessions[socket.session].clients = sessions[
+          socket.session
+        ].clients.filter((c) => c.id !== socket.id);
+        const finalClientCount = sessions[socket.session].clients.length;
+
+        if (initialClientCount !== finalClientCount) {
+          console.log(
+            `[CLIENT-LEFT] Client (${socket.name}) left session ${socket.session}. Clients: ${finalClientCount}`
+          );
+
+          // Notify host about client leaving
+          if (sessions[socket.session].host) {
+            sessions[socket.session].host.socket.emit("user-left", {
+              name: socket.name,
+              id: socket.id,
+              role: socket.role,
+            });
+          }
+        }
+      }
+
+      // Handle host disconnection
+      if (
+        socket.role === "host" &&
+        sessions[socket.session].host?.id === socket.id
+      ) {
+        console.log(
+          `[HOST-LEFT] Host (${socket.name}) left session ${socket.session}`
+        );
+
         // Notify all clients in the session
         io.to(socket.session).emit("host_disconnect", {
           message: "Host has disconnected. Session ended.",
@@ -181,28 +269,33 @@ io.on("connection", (socket) => {
         sessions[socket.session].host = null;
       }
 
+      // Update presence for remaining clients
       const clientList = sessions[socket.session].clients.map((c) => ({
         id: c.id,
         name: c.name,
       }));
+
       io.to(socket.session).emit("presence-update", {
         host: sessions[socket.session].host?.name,
         clients: clientList,
       });
 
-      socket
-        .to(socket.session)
-        .emit("user-left", { name: socket.name, role: socket.role });
-
+      // Clean up empty sessions
       if (
         !sessions[socket.session].host &&
         sessions[socket.session].clients.length === 0
       ) {
+        console.log(
+          `[SESSION-CLEANUP] Removing empty session ${socket.session}`
+        );
         delete sessions[socket.session];
+      } else {
+        console.log(
+          `[SESSION-STATUS] Session ${socket.session}: Host=${
+            sessions[socket.session].host?.name
+          }, Clients=${sessions[socket.session].clients.length}`
+        );
       }
-      console.log(
-        `[LEAVE] ${socket.role} (${socket.name}) left session ${socket.session}`
-      );
     }
   });
 });
