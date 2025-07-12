@@ -6,8 +6,16 @@ const server = http.createServer();
 const io = new IOServer(server, {
   path: "/socket.io",
   cors: {
-    origin: "https://audionize.netlify.app",
-    methods: ["GET", "POST"],
+    origin: [
+      "https://audionize.netlify.app",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "https://localhost:3000",
+      "https://127.0.0.1:3000",
+    ],
+    methods: ["GET", "POST", "OPTIONS"],
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization"],
   },
 });
 const wss = new WebSocket.Server({ server, path: "/ws" });
