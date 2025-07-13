@@ -37,6 +37,7 @@ const io = new IOServer(server, {
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization"],
   },
+  maxHttpBufferSize: 1e8, // 100 MB
 });
 
 const PORT = process.env.PORT || 4000;
@@ -171,6 +172,18 @@ io.on("connection", (socket) => {
 
   socket.on("audio_upload", (audio) => {
     if (socket.session && sessions[socket.session]) {
+      console.log(
+        `[AUDIO-UPLOAD] Received audio upload from ${socket.id} (size: ${
+          audio?.fileSize || "unknown"
+        })`
+      );
+      // Optional: Validate file size (reject if >100MB)
+      if (audio && audio.fileSize && audio.fileSize > 100 * 1024 * 1024) {
+        socket.emit("audio-upload-error", {
+          message: "File too large (max 100MB)",
+        });
+        return;
+      }
       sessions[socket.session].audio = audio;
       socket.to(socket.session).emit("audio-uploaded", audio);
       socket.to(socket.session).emit("audio_sync", audio);
