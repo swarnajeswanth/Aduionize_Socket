@@ -47,6 +47,9 @@ const clientReadiness = new Map(); // Track client readiness: { sessionCode: Set
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const CLIENT_TIMEOUT = 90000; // 90 seconds - client considered disconnected if no heartbeat
 
+// Add debouncing for play commands to prevent spam
+const playCommandDebounce = new Map(); // { sessionCode: { lastCommand: timestamp, pending: false } }
+
 // Health check endpoints for Render
 app.get("/", (req, res) => res.send("Audionize Sync Server is running!"));
 app.get("/healthz", (req, res) => res.status(200).send("OK"));
@@ -219,9 +222,8 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Optimized command forwarding for millisecond precision
+  // Optimized command forwarding for millisecond precision with debouncing
   [
-    "play_command",
     "pause_command",
     "seek_command",
     "volume_command",
@@ -249,6 +251,48 @@ io.on("connection", (socket) => {
         }
       }
     });
+  });
+
+  // Special handling for play_command with debouncing
+  socket.on("play_command", (data) => {
+    if (socket.session) {
+      const sessionCode = socket.session;
+      const now = Date.now();
+      const debounceInfo = playCommandDebounce.get(sessionCode) || {
+        lastCommand: 0,
+        pending: false,
+      };
+
+      // Debounce play commands to prevent spam (100ms minimum interval)
+      if (now - debounceInfo.lastCommand < 100) {
+        console.log(
+          `[PLAY_COMMAND] Debounced - too frequent (${
+            now - debounceInfo.lastCommand
+          }ms since last)`
+        );
+        return;
+      }
+
+      // Update debounce info
+      playCommandDebounce.set(sessionCode, {
+        lastCommand: now,
+        pending: false,
+      });
+
+      // Add timestamp for tracking
+      const enhancedData = {
+        ...data,
+        serverTimestamp: now,
+        originalTimestamp: data.timestamp,
+      };
+
+      // Forward to clients
+      socket.to(sessionCode).emit("play_command", enhancedData);
+
+      console.log(
+        `[PLAY_COMMAND] Forwarded to ${sessions[sessionCode].clients.length} clients (debounced)`
+      );
+    }
   });
 
   socket.on("mic-status", ({ isMuted }) => {
@@ -289,7 +333,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle client readiness for better sync
+  // Handle client readiness for better sync with deduplication
   socket.on("client-ready", (data) => {
     if (socket.session) {
       // Initialize readiness tracking for this session if not exists
@@ -298,11 +342,15 @@ io.on("connection", (socket) => {
       }
 
       const readyClients = clientReadiness.get(socket.session);
+      const wasAlreadyReady = readyClients.has(socket.id);
       readyClients.add(socket.id);
 
-      console.log(
-        `[CLIENT-READY] ${socket.name} (${socket.id}) ready in session ${socket.session}`
-      );
+      // Only log if this is a new ready state
+      if (!wasAlreadyReady) {
+        console.log(
+          `[CLIENT-READY] ${socket.name} (${socket.id}) ready in session ${socket.session}`
+        );
+      }
 
       // Check if all clients in the session are ready
       const session = sessions[socket.session];
@@ -312,15 +360,32 @@ io.on("connection", (socket) => {
         );
 
         if (allClientsReady && session.host && session.host.socket.connected) {
-          console.log(
-            `[SERVER] Emitting all-clients-ready to host socket: ${session.host.socket.id}`
-          );
-          console.log(`[SERVER] Ready clients: ${Array.from(readyClients)}`);
-          session.host.socket.emit("all-clients-ready", {
-            sessionCode: socket.session,
-            readyClients: Array.from(readyClients),
-          });
-          console.log(`[SERVER] all-clients-ready event sent to host`);
+          // Only emit if we haven't already notified about this state
+          const sessionKey = `${socket.session}_all_ready`;
+          const lastNotification = playCommandDebounce.get(sessionKey);
+          const now = Date.now();
+
+          if (!lastNotification || now - lastNotification.lastCommand > 1000) {
+            console.log(
+              `[SERVER] Emitting all-clients-ready to host socket: ${session.host.socket.id}`
+            );
+            console.log(`[SERVER] Ready clients: ${Array.from(readyClients)}`);
+            session.host.socket.emit("all-clients-ready", {
+              sessionCode: socket.session,
+              readyClients: Array.from(readyClients),
+            });
+            console.log(`[SERVER] all-clients-ready event sent to host`);
+
+            // Track this notification to prevent spam
+            playCommandDebounce.set(sessionKey, {
+              lastCommand: now,
+              pending: false,
+            });
+          } else {
+            console.log(
+              `[SERVER] Skipping duplicate all-clients-ready notification`
+            );
+          }
         } else if (
           allClientsReady &&
           session.host &&
@@ -360,6 +425,10 @@ io.on("connection", (socket) => {
           clientReadiness.delete(socket.session);
         }
       }
+
+      // Clean up debounce tracking for this session
+      playCommandDebounce.delete(socket.session);
+      playCommandDebounce.delete(`${socket.session}_all_ready`);
     }
 
     if (socket.session && sessions[socket.session]) {
