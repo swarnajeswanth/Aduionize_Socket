@@ -41,7 +41,7 @@ const io = new IOServer(server, {
 });
 
 const PORT = process.env.PORT || 4000;
-const sessions = {}; // { sessionCode: { host: socket, clients: [socket, ...], audio: {url, name, size, type}, readyClients: Set } }
+const sessions = {}; // { sessionCode: { host: socket, clients: [socket, ...], audio: {url, name, size, type} } }
 const clientHeartbeats = new Map(); // Track client heartbeats for cleanup
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const CLIENT_TIMEOUT = 90000; // 90 seconds - client considered disconnected if no heartbeat
@@ -103,7 +103,6 @@ io.on("connection", (socket) => {
         host: null,
         audio: null,
         createdAt: Date.now(),
-        readyClients: new Set(), // Track which clients are ready
       };
       console.log(`[SESSION-CREATED] New session ${session} created`);
     }
@@ -151,33 +150,6 @@ io.on("connection", (socket) => {
         });
       }
     }
-
-    // Add client ready event handler:
-    socket.on("client-ready", () => {
-      if (socket.session && sessions[socket.session]) {
-        sessions[socket.session].readyClients.add(socket.id);
-        console.log(
-          `[CLIENT-READY] Client ${socket.id} (${socket.name}) is ready`
-        );
-
-        // Check if all clients are ready
-        const allClients = sessions[socket.session].clients.map((c) => c.id);
-        const readyClients = Array.from(sessions[socket.session].readyClients);
-        const allReady = allClients.every((clientId) =>
-          readyClients.includes(clientId)
-        );
-
-        if (allReady && sessions[socket.session].host) {
-          console.log(
-            `[ALL-CLIENTS-READY] All clients ready for session ${socket.session}`
-          );
-          sessions[socket.session].host.socket.emit("all-clients-ready", {
-            readyClients: readyClients,
-            totalClients: allClients.length,
-          });
-        }
-      }
-    });
 
     // Broadcast updated presence to all clients in session
     const clientList = sessions[session].clients.map((c) => ({
@@ -262,7 +234,6 @@ io.on("connection", (socket) => {
         const clientSocket = session.clients[clientIndex].socket;
         if (clientSocket) clientSocket.disconnect(true);
         session.clients.splice(clientIndex, 1);
-        session.readyClients.delete(clientId); // Remove from ready clients
         const clientList = session.clients.map((c) => ({
           id: c.id,
           name: c.name,
@@ -293,7 +264,6 @@ io.on("connection", (socket) => {
         sessions[socket.session].clients = sessions[
           socket.session
         ].clients.filter((c) => c.id !== socket.id);
-        sessions[socket.session].readyClients.delete(socket.id); // Remove from ready clients
         const finalClientCount = sessions[socket.session].clients.length;
 
         if (initialClientCount !== finalClientCount) {
