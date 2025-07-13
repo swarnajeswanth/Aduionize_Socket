@@ -43,6 +43,7 @@ const io = new IOServer(server, {
 const PORT = process.env.PORT || 4000;
 const sessions = {}; // { sessionCode: { host: socket, clients: [socket, ...], audio: {url, name, size, type} } }
 const clientHeartbeats = new Map(); // Track client heartbeats for cleanup
+const clientReadiness = new Map(); // Track client readiness: { sessionCode: Set<clientId> }
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const CLIENT_TIMEOUT = 90000; // 90 seconds - client considered disconnected if no heartbeat
 
@@ -197,6 +198,7 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Optimized command forwarding for millisecond precision
   [
     "play_command",
     "pause_command",
@@ -206,7 +208,24 @@ io.on("connection", (socket) => {
   ].forEach((event) => {
     socket.on(event, (data) => {
       if (socket.session) {
-        socket.to(socket.session).emit(event, data);
+        // Add timestamp for tracking
+        const enhancedData = {
+          ...data,
+          serverTimestamp: Date.now(),
+          originalTimestamp: data.timestamp,
+        };
+
+        // Forward immediately without any processing delay
+        socket.to(socket.session).emit(event, enhancedData);
+
+        // Log for debugging (optional)
+        if (event === "play_command") {
+          console.log(
+            `[${event.toUpperCase()}] Forwarded to ${
+              sessions[socket.session].clients.length
+            } clients`
+          );
+        }
       }
     });
   });
@@ -249,9 +268,68 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Handle client readiness for better sync
+  socket.on("client-ready", () => {
+    if (socket.session) {
+      // Initialize readiness tracking for this session if not exists
+      if (!clientReadiness.has(socket.session)) {
+        clientReadiness.set(socket.session, new Set());
+      }
+
+      const readyClients = clientReadiness.get(socket.session);
+      readyClients.add(socket.id);
+
+      console.log(
+        `[CLIENT-READY] ${socket.name} (${socket.id}) ready in session ${socket.session}`
+      );
+
+      // Check if all clients in the session are ready
+      const session = sessions[socket.session];
+      if (session && session.clients.length > 0) {
+        const allClientsReady = session.clients.every((client) =>
+          readyClients.has(client.id)
+        );
+
+        if (allClientsReady && session.host) {
+          console.log(
+            `[ALL-CLIENTS-READY] Session ${socket.session} - all clients ready`
+          );
+          session.host.socket.emit("all-clients-ready", {
+            sessionCode: socket.session,
+            readyClients: Array.from(readyClients),
+          });
+        }
+      }
+    }
+  });
+
+  socket.on("client-not-ready", () => {
+    if (socket.session) {
+      const readyClients = clientReadiness.get(socket.session);
+      if (readyClients) {
+        readyClients.delete(socket.id);
+        console.log(
+          `[CLIENT-NOT-READY] ${socket.name} (${socket.id}) not ready in session ${socket.session}`
+        );
+      }
+    }
+  });
+
   socket.on("disconnect", () => {
     // Clean up heartbeat tracking
     clientHeartbeats.delete(socket.id);
+
+    // Clean up readiness tracking
+    if (socket.session) {
+      const readyClients = clientReadiness.get(socket.session);
+      if (readyClients) {
+        readyClients.delete(socket.id);
+        // Remove session from readiness tracking if no clients left
+        if (readyClients.size === 0) {
+          clientReadiness.delete(socket.session);
+        }
+      }
+    }
 
     if (socket.session && sessions[socket.session]) {
       console.log(
