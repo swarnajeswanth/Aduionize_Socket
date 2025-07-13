@@ -41,6 +41,9 @@ const io = new IOServer(server, {
 
 const PORT = process.env.PORT || 4000;
 const sessions = {}; // { sessionCode: { host: socket, clients: [socket, ...], audio: {url, name, size, type} } }
+const clientHeartbeats = new Map(); // Track client heartbeats for cleanup
+const HEARTBEAT_INTERVAL = 30000; // 30 seconds
+const CLIENT_TIMEOUT = 90000; // 90 seconds - client considered disconnected if no heartbeat
 
 // Health check endpoints for Render
 app.get("/", (req, res) => res.send("Audionize Sync Server is running!"));
@@ -66,6 +69,16 @@ app.get("/status", (req, res) =>
 
 // --- Socket.IO (Internet) ---
 io.on("connection", (socket) => {
+  // Set up heartbeat for this socket
+  socket.heartbeat = Date.now();
+  clientHeartbeats.set(socket.id, Date.now());
+
+  // Handle heartbeat from clients
+  socket.on("heartbeat", () => {
+    socket.heartbeat = Date.now();
+    clientHeartbeats.set(socket.id, Date.now());
+  });
+
   socket.on("join", ({ session, role, name }) => {
     console.log(
       `[JOIN-ATTEMPT] ${role} (${name}) attempting to join session ${session}`
@@ -224,6 +237,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    // Clean up heartbeat tracking
+    clientHeartbeats.delete(socket.id);
+
     if (socket.session && sessions[socket.session]) {
       console.log(
         `[DISCONNECT] ${socket.role} (${socket.name}) disconnecting from session ${socket.session}`
@@ -300,6 +316,39 @@ io.on("connection", (socket) => {
   });
 });
 
+// Heartbeat cleanup mechanism
+setInterval(() => {
+  const now = Date.now();
+  const disconnectedClients = [];
+
+  // Check for stale clients
+  for (const [clientId, lastHeartbeat] of clientHeartbeats.entries()) {
+    if (now - lastHeartbeat > CLIENT_TIMEOUT) {
+      disconnectedClients.push(clientId);
+    }
+  }
+
+  // Clean up disconnected clients
+  disconnectedClients.forEach((clientId) => {
+    const socket = io.sockets.sockets.get(clientId);
+    if (socket) {
+      console.log(
+        `[HEARTBEAT-TIMEOUT] Client ${clientId} timed out, forcing disconnect`
+      );
+      socket.disconnect(true);
+    }
+    clientHeartbeats.delete(clientId);
+  });
+
+  // Log cleanup stats
+  if (disconnectedClients.length > 0) {
+    console.log(
+      `[HEARTBEAT-CLEANUP] Cleaned up ${disconnectedClients.length} stale clients`
+    );
+  }
+}, HEARTBEAT_INTERVAL);
+
 server.listen(PORT, () => {
   console.log(`Audionize Sync Server started on port ${PORT}`);
+  console.log(`Heartbeat cleanup running every ${HEARTBEAT_INTERVAL}ms`);
 });
