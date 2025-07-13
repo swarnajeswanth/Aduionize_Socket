@@ -137,6 +137,9 @@ io.on("connection", (socket) => {
 
       // Send existing audio to new host
       if (sessions[session].audio) {
+        console.log(
+          `[AUDIO-SYNC] Sending existing audio to new host (${name}) in session ${session}`
+        );
         socket.emit("audio-uploaded", sessions[session].audio);
         socket.emit("audio_sync", sessions[session].audio);
       }
@@ -154,6 +157,9 @@ io.on("connection", (socket) => {
 
       // Send existing audio to new client
       if (sessions[session].audio) {
+        console.log(
+          `[AUDIO-SYNC] Sending existing audio to new client (${name}) in session ${session}`
+        );
         socket.emit("audio-uploaded", sessions[session].audio);
         socket.emit("audio_sync", sessions[session].audio);
       }
