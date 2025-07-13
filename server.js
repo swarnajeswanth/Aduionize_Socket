@@ -108,7 +108,7 @@ io.on("connection", (socket) => {
       console.log(`[SESSION-CREATED] New session ${session} created`);
     }
 
-    // Remove any existing connection for this socket ID
+    // If host joins, set host in the existing session (do NOT overwrite session object)
     if (role === "host") {
       // If there's already a host, disconnect them
       if (sessions[session].host && sessions[session].host.id !== socket.id) {
