@@ -45,6 +45,7 @@ const sessions = {}; // { sessionCode: { host: socket, clients: [socket, ...], a
 const clientHeartbeats = new Map(); // Track client heartbeats for cleanup
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const CLIENT_TIMEOUT = 90000; // 90 seconds - client considered disconnected if no heartbeat
+const readyClients = {}; // { sessionCode: Set of ready client IDs }
 
 // Health check endpoints for Render
 app.get("/", (req, res) => res.send("Audionize Sync Server is running!"));
@@ -162,6 +163,8 @@ io.on("connection", (socket) => {
       clients: clientList,
     });
 
+    if (!readyClients[session]) readyClients[session] = new Set();
+
     console.log(
       `[JOIN-SUCCESS] ${role} (${name}) successfully joined session ${session}`
     );
@@ -193,6 +196,23 @@ io.on("connection", (socket) => {
       ) {
         sessions[socket.session].host.socket.emit("audio-uploaded", audio);
         sessions[socket.session].host.socket.emit("audio_sync", audio);
+      }
+      if (readyClients[socket.session]) readyClients[socket.session].clear();
+    }
+  });
+
+  socket.on("client-ready", () => {
+    if (socket.session && sessions[socket.session]) {
+      if (!readyClients[socket.session])
+        readyClients[socket.session] = new Set();
+      readyClients[socket.session].add(socket.id);
+      // Check if all clients are ready
+      const allClientIds = sessions[socket.session].clients.map((c) => c.id);
+      const allReady =
+        allClientIds.length > 0 &&
+        allClientIds.every((id) => readyClients[socket.session].has(id));
+      if (allReady && sessions[socket.session].host) {
+        sessions[socket.session].host.socket.emit("all-clients-ready");
       }
     }
   });
@@ -247,6 +267,8 @@ io.on("connection", (socket) => {
         );
       }
     }
+    if (readyClients[socket.session])
+      readyClients[socket.session].delete(socket.id);
   });
 
   socket.on("disconnect", () => {
@@ -318,6 +340,7 @@ io.on("connection", (socket) => {
           `[SESSION-CLEANUP] Removing empty session ${socket.session}`
         );
         delete sessions[socket.session];
+        delete readyClients[socket.session];
       } else {
         console.log(
           `[SESSION-STATUS] Session ${socket.session}: Host=${
