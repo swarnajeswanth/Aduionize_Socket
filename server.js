@@ -270,7 +270,7 @@ io.on("connection", (socket) => {
   });
 
   // Handle client readiness for better sync
-  socket.on("client-ready", () => {
+  socket.on("client-ready", (data) => {
     if (socket.session) {
       // Initialize readiness tracking for this session if not exists
       if (!clientReadiness.has(socket.session)) {
@@ -291,20 +291,30 @@ io.on("connection", (socket) => {
           readyClients.has(client.id)
         );
 
-        if (allClientsReady && session.host) {
+        if (allClientsReady && session.host && session.host.socket.connected) {
           console.log(
             `[SERVER] Emitting all-clients-ready to host socket: ${session.host.socket.id}`
           );
+          console.log(`[SERVER] Ready clients: ${Array.from(readyClients)}`);
           session.host.socket.emit("all-clients-ready", {
             sessionCode: socket.session,
             readyClients: Array.from(readyClients),
           });
+          console.log(`[SERVER] all-clients-ready event sent to host`);
+        } else if (
+          allClientsReady &&
+          session.host &&
+          !session.host.socket.connected
+        ) {
+          console.log(
+            `[SERVER] Host socket not connected, cannot send all-clients-ready`
+          );
         }
       }
     }
   });
 
-  socket.on("client-not-ready", () => {
+  socket.on("client-not-ready", (data) => {
     if (socket.session) {
       const readyClients = clientReadiness.get(socket.session);
       if (readyClients) {
