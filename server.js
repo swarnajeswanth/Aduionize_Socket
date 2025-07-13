@@ -117,6 +117,7 @@ io.on("connection", (socket) => {
         );
         sessions[session].host.socket.disconnect(true);
       }
+      // Always update the host socket reference
       sessions[session].host = { id: socket.id, name, socket };
       console.log(`[HOST-JOINED] Host (${name}) joined session ${session}`);
 
@@ -292,7 +293,7 @@ io.on("connection", (socket) => {
 
         if (allClientsReady && session.host) {
           console.log(
-            `[ALL-CLIENTS-READY] Session ${socket.session} - all clients ready`
+            `[SERVER] Emitting all-clients-ready to host socket: ${session.host.socket.id}`
           );
           session.host.socket.emit("all-clients-ready", {
             sessionCode: socket.session,
