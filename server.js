@@ -92,6 +92,20 @@ io.on("connection", (socket) => {
       return;
     }
 
+    // Prevent clients from joining non-existent or hostless sessions
+    if (role === "client") {
+      if (!sessions[session] || !sessions[session].host) {
+        socket.emit("session-not-found", {
+          message:
+            "Session not found or host is not active. Please check the code or ask the host to start a new session.",
+        });
+        console.log(
+          `[JOIN-ERROR] Client (${name}) attempted to join non-existent or hostless session ${session}`
+        );
+        return;
+      }
+    }
+
     socket.session = session;
     socket.role = role;
     socket.name = name;
