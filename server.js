@@ -127,9 +127,9 @@ io.on("connection", (socket) => {
         socket.emit("audio_sync", sessions[session].audio);
       }
     } else {
-      // Remove any existing client with same ID
+      // Remove any existing client with same ID or name
       sessions[session].clients = sessions[session].clients.filter(
-        (c) => c.id !== socket.id
+        (c) => c.id !== socket.id && c.name !== name
       );
 
       // Add new client
