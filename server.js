@@ -51,6 +51,7 @@ const clientReadiness = new Map(); // Track client readiness: { sessionCode: Set
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const CLIENT_TIMEOUT = 90000; // 90 seconds - client considered disconnected if no heartbeat
 const SESSION_CLEANUP_INTERVAL = 300000; // 5 minutes - clean up old sessions
+const HOST_GRACE_PERIOD = 5 * 60 * 1000; // 5 minutes - grace period for host reconnection
 const MAX_SESSIONS_PER_IP = 10; // Prevent abuse
 const MAX_CLIENTS_PER_SESSION = 50; // Prevent overcrowding
 
@@ -152,6 +153,7 @@ app.get("/status", (req, res) =>
     sessions: Object.keys(sessions).map((sessionCode) => ({
       sessionCode,
       host: sessions[sessionCode].host?.name || null,
+      hostDisconnectedAt: sessions[sessionCode].hostDisconnectedAt || null,
       clientCount: sessions[sessionCode].clients.length,
       clients: sessions[sessionCode].clients.map((c) => ({
         id: c.id,
@@ -171,6 +173,46 @@ app.get("/status", (req, res) =>
     timestamp: new Date().toISOString(),
   })
 );
+
+// Session status endpoint for checking specific session
+app.get("/session/:sessionCode", (req, res) => {
+  const { sessionCode } = req.params;
+
+  if (!sessions[sessionCode]) {
+    return res.status(404).json({
+      error: "Session not found",
+      sessionCode,
+    });
+  }
+
+  const session = sessions[sessionCode];
+  const now = Date.now();
+
+  res.json({
+    sessionCode,
+    exists: true,
+    host: session.host
+      ? {
+          name: session.host.name,
+          id: session.host.id,
+          connected: true,
+        }
+      : null,
+    hostDisconnectedAt: session.hostDisconnectedAt || null,
+    hostGracePeriodRemaining: session.hostDisconnectedAt
+      ? Math.max(0, HOST_GRACE_PERIOD - (now - session.hostDisconnectedAt))
+      : null,
+    clientCount: session.clients.length,
+    clients: session.clients.map((c) => ({
+      id: c.id,
+      name: c.name,
+    })),
+    hasAudio: !!session.audio,
+    createdAt: session.createdAt,
+    age: Math.round((now - session.createdAt) / 1000 / 60), // minutes
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -735,7 +777,7 @@ io.on("connection", (socket) => {
           }
         }
 
-        // Handle host disconnection
+        // Handle host disconnection with grace period
         if (
           socket.role === "host" &&
           sessions[socket.session].host?.id === socket.id
@@ -744,20 +786,40 @@ io.on("connection", (socket) => {
             `[HOST-LEFT] Host (${socket.name}) left session ${socket.session}`
           );
 
-          // Notify all clients in the session and disconnect them
-          io.to(socket.session).emit("host_disconnect", {
-            message: "Host has disconnected. Session ended.",
-          });
-
-          // Disconnect all clients
-          sessions[socket.session].clients.forEach((client) => {
-            if (client.socket) client.socket.disconnect(true);
-          });
-
-          // Remove host and clients, then delete session
+          // Mark host as disconnected but keep session alive
+          sessions[socket.session].hostDisconnectedAt = Date.now();
           sessions[socket.session].host = null;
-          sessions[socket.session].clients = [];
-          delete sessions[socket.session];
+
+          // Notify clients but don't disconnect them immediately
+          io.to(socket.session).emit("host_disconnect", {
+            message: "Host has disconnected. Waiting for reconnection...",
+            gracePeriod: HOST_GRACE_PERIOD,
+            hostName: socket.name,
+          });
+
+          // Set cleanup timer for session if host doesn't return
+          setTimeout(() => {
+            if (sessions[socket.session] && !sessions[socket.session].host) {
+              console.log(
+                `[HOST-GRACE-TIMEOUT] Host did not return to session ${socket.session}, cleaning up`
+              );
+
+              // Notify clients that session is ending
+              io.to(socket.session).emit("host_disconnect", {
+                message: "Host did not return. Session ended.",
+                gracePeriod: 0,
+              });
+
+              // Disconnect all clients
+              sessions[socket.session].clients.forEach((client) => {
+                if (client.socket) client.socket.disconnect(true);
+              });
+
+              // Clean up session
+              delete sessions[socket.session];
+            }
+          }, HOST_GRACE_PERIOD);
+
           return; // End further processing
         }
 
